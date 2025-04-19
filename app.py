@@ -78,6 +78,15 @@ st.markdown("""
 
     section[data-testid="stSidebar"] * {
         color: #2c3e50 !important;
+    }        
+    /* ✅ 追加：情報ボックスの背景と文字をくっきり見やすく */
+    div[data-testid="stInfo"] {
+        background-color: #dff5f2 !important;
+        color: #1a3c40 !important;
+        border: 1px solid #1a3c40;
+        border-radius: 8px;
+        padding: 1rem;
+        font-weight: bold;        
     }
     </style>
 """, unsafe_allow_html=True)
