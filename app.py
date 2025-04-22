@@ -1,95 +1,90 @@
 import streamlit as st
 import pandas as pd
 import os
-SAVE_FILE = "pet_journal_data.csv"
-IMAGE_DIR = "images"
-os.makedirs(IMAGE_DIR, exist_ok=True)
 from datetime import date, datetime, timedelta
+import traceback
+import logging
+
+# ログ設定
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# 定数の設定
+SAVE_FILE = "pet_journal_data.csv"
+GROWTH_LOG_FILE = "growth_log.csv"
+MEMO_LOG_FILE = "memo_log.csv"
+IMAGE_DIR = "images"
+
+# ディレクトリの作成（存在しない場合）
+os.makedirs(IMAGE_DIR, exist_ok=True)
 
 # 💄 ページテーマとスタイル設定（すべてのページに影響）
-st.set_page_config(page_title="ペット成長日記 / Pet Growth Diary", layout="centered")
+st.set_page_config(
+    page_title="ペット成長日記 / Pet Growth Diary", 
+    layout="centered",
+    initial_sidebar_state="expanded"
+)
+
+# シンプルなスタイル設定
 st.markdown("""
     <style>
-    /* 全体背景とフォント設定 */
-    body {
-        background-color: #f5f7fa;
-        font-family: "Segoe UI", "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
-        font-size: 16px;
-    }
-
-    .stApp {
-        background-color: #ffffff;
-        color: #1f1f1f;
-    }
-
-    /* タイトル系 */
-    h1, h2, h3, h4, label {
-        color: #2c3e50 !important;
-        font-weight: bold;
-    }
-
-    /* 入力フォームの文字色 */
-    .stTextInput label,
-    .stDateInput label,
-    .stNumberInput label,
-    .stTextArea label,
-    .stSelectbox label {
-        color: #34495e !important;
-    }
-
-    /* ボタンデザイン */
+    /* ボタンデザイン - よりコントラストを強化 */
     .stButton>button {
-        background-color: #90ee90;
-        color: #1f1f1f;
-        border: none;
-        padding: 0.6rem 1.2rem;
-        border-radius: 0.5rem;
+        background-color: #4CAF50 !important;
+        color: white !important;
         font-weight: bold;
         font-size: 16px;
     }
-
-    /* 画像表示を角丸＆影付きに */
-    img {
-        border-radius: 12px;
-        box-shadow: 0px 4px 12px rgba(0,0,0,0.1);
-        margin-bottom: 1rem;
-    }
-
-    /* データフレームや表にも余白と背景 */
-    .stDataFrame, .element-container {
-        background-color: #fafafa;
-        padding: 1rem;
-        border-radius: 10px;
-        box-shadow: 0 0 10px rgba(0,0,0,0.05);
-    }
-
-    /* スマホ対応 */
-    @media screen and (max-width: 768px) {
-        .stApp {
-            padding: 0.5rem !important;
-        }
-    }
-
-    /* ✅ 追加：サイドバーの背景と文字色を明示的に設定 */
-    section[data-testid="stSidebar"] {
-        background-color: #ffffff;
-        color: #2c3e50;
-    }
-
-    section[data-testid="stSidebar"] * {
-        color: #2c3e50 !important;
-    }        
-    /* ✅ 追加：情報ボックスの背景と文字をくっきり見やすく */
-    div[data-testid="stInfo"] {
-        background-color: #dff5f2 !important;
-        color: #1a3c40 !important;
-        border: 1px solid #1a3c40;
+    
+    /* メッセージの可読性向上 */
+    .stSuccess, .stError, .stInfo, .stWarning {
+        color: black !important;
+        font-weight: bold !important;
+        border: 2px solid;
         border-radius: 8px;
-        padding: 1rem;
-        font-weight: bold;        
+        padding: 10px;
+        margin: 10px 0;
     }
     </style>
 """, unsafe_allow_html=True)
+
+# エラーハンドリング用の共通関数
+def safe_load_dataframe(file_path, default_empty=True):
+    """安全にデータフレームを読み込む関数"""
+    try:
+        if os.path.exists(file_path):
+            return pd.read_csv(file_path)
+        elif default_empty:
+            return pd.DataFrame()
+        else:
+            st.warning("ファイルが見つかりません: " + file_path)
+            return pd.DataFrame()
+    except Exception as e:
+        st.error("データの読み込み中にエラーが発生しました: " + str(e))
+        logging.error(f"データ読み込みエラー: {str(e)}\n{traceback.format_exc()}")
+        return pd.DataFrame()
+
+def safe_save_dataframe(df, file_path):
+    """安全にデータフレームを保存する関数"""
+    try:
+        df.to_csv(file_path, index=False)
+        return True
+    except Exception as e:
+        st.error("データの保存中にエラーが発生しました: " + str(e))
+        logging.error(f"データ保存エラー: {str(e)}\n{traceback.format_exc()}")
+        return False
+
+def safe_save_image(uploaded_file, path):
+    """安全に画像を保存する関数"""
+    try:
+        if uploaded_file is not None:
+            with open(path, "wb") as f:
+                f.write(uploaded_file.read())
+            return True
+        return False
+    except Exception as e:
+        st.error("画像の保存中にエラーが発生しました: " + str(e))
+        logging.error(f"画像保存エラー: {str(e)}\n{traceback.format_exc()}")
+        return False
 
 # セッション初期化
 if "pet_name" not in st.session_state:
@@ -124,70 +119,120 @@ def show_menu():
         ]
     )
 
+# データ編集共通関数
+def editable_data(df_page, key_prefix, page_label):
+    st.subheader(t("📝 編集可能なデータ", "📝 Editable Data"))
+    
+    # データが空の場合のハンドリング
+    if df_page.empty:
+        st.info(t("📭 まだデータがありません。上記のフォームで情報を入力してください。", 
+                 "📭 No data yet. Please enter information in the form above."))
+        return
+    
+    try:
+        editable_df = df_page.drop(columns=["名前", "ページ"], errors="ignore")
+        edited = st.data_editor(editable_df, key=f"edit_table_{key_prefix}", use_container_width=True)
+        
+        if st.button(t("変更を保存", "Save Changes"), key=f"save_edit_{key_prefix}"):
+            df_all = safe_load_dataframe(SAVE_FILE)
+            
+            new_df = df_page.copy()
+            for col in edited.columns:
+                new_df[col] = edited[col]
+                
+            not_this_page = df_all[df_all["ページ"] != page_label]
+            updated = pd.concat([not_this_page, new_df], ignore_index=True)
+            
+            if safe_save_dataframe(updated, SAVE_FILE):
+                st.success(t("✅ 変更を保存しました！", "✅ Changes saved!"))
+    except Exception as e:
+        st.error(t(f"エラーが発生しました: {str(e)}", f"An error occurred: {str(e)}"))
+        logging.error(f"データ編集エラー: {str(e)}\n{traceback.format_exc()}")
+
 # 名前入力画面
 if st.session_state.page == "input_name":
     st.title(t("🐾 私のペット成長日記", "🐾 My Pet Growth Diary"))
     st.subheader(t("ペットの名前を入力してください", "Please enter your pet's name"))
+    
     name_input = st.text_input(t("名前", "Name"))
-    if st.button(t("次へ", "Next")) and name_input:
+    
+    next_button = st.button(t("次へ", "Next"), key="next_from_name")
+    
+    if next_button and name_input:
         st.session_state.pet_name = name_input
         st.session_state.page = "main"
         st.rerun()
+    elif next_button and not name_input:
+        st.warning(t("⚠️ 名前を入力してください", "⚠️ Please enter a name"))
+
 elif st.session_state.page == "main":
     selected = show_menu()
     st.markdown(f"## 🐶 {st.session_state.pet_name} のページ / {st.session_state.pet_name}'s Page")
 
-    if os.path.exists(SAVE_FILE):
-        df_save = pd.read_csv(SAVE_FILE)
-    else:
-        df_save = pd.DataFrame()
-
-    def editable_data(df_page, key_prefix, page_label):
-        st.subheader(t("📝 編集可能なデータ", "📝 Editable Data"))
-        editable_df = df_page.drop(columns=["名前", "ページ"], errors="ignore")
-        edited = st.data_editor(editable_df, key=f"edit_table_{key_prefix}", use_container_width=True)
-        if st.button(t("変更を保存", "Save Changes"), key=f"save_edit_{key_prefix}"):
-            new_df = df_page.copy()
-            for col in edited.columns:
-                new_df[col] = edited[col]
-            not_this_page = df_save[df_save["ページ"] != page_label]
-            updated = pd.concat([not_this_page, new_df], ignore_index=True)
-            updated.to_csv(SAVE_FILE, index=False)
-            st.success(t("✅ 変更を保存しました！", "✅ Changes saved!"))
+    # メインのデータフレームを読み込み
+    df_save = safe_load_dataframe(SAVE_FILE)
 
     # ページ 1: 写真ページ
     if selected == t("1. 写真ページ", "1. Photo Page"):
-        st.markdown("<h3 style='color:#2c3e50;'>📸 生まれたときの写真 / Photos from Birth</h3>", unsafe_allow_html=True)
-        photo1 = st.file_uploader(t("1枚目の写真を選択", "Select the first photo"), type=["jpg", "jpeg", "png"], key="photo1")
-        photo2 = st.file_uploader(t("2枚目の写真を選択", "Select the second photo"), type=["jpg", "jpeg", "png"], key="photo2")
-
-        if photo1 is not None:
-            path1 = os.path.join(IMAGE_DIR, f"{st.session_state.pet_name}_photo1.jpg")
-            with open(path1, "wb") as f:
-                f.write(photo1.read())
-            st.image(path1, caption=t("📷 1枚目", "📷 Photo 1"), use_container_width=True)
-
-        if photo2 is not None:
-            path2 = os.path.join(IMAGE_DIR, f"{st.session_state.pet_name}_photo2.jpg")
-            with open(path2, "wb") as f:
-                f.write(photo2.read())
-            st.image(path2, caption=t("📷 2枚目", "📷 Photo 2"), use_container_width=True)
+        st.header(t("📸 生まれたときの写真", "📸 Photos from Birth"))
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            photo1 = st.file_uploader(t("1枚目の写真を選択", "Select the first photo"), 
+                                      type=["jpg", "jpeg", "png"], key="photo1")
+            if photo1 is not None:
+                path1 = os.path.join(IMAGE_DIR, f"{st.session_state.pet_name}_photo1.jpg")
+                if safe_save_image(photo1, path1):
+                    st.image(path1, caption=t("📷 1枚目", "📷 Photo 1"), use_container_width=True)
+        
+        with col2:
+            photo2 = st.file_uploader(t("2枚目の写真を選択", "Select the second photo"), 
+                                      type=["jpg", "jpeg", "png"], key="photo2")
+            if photo2 is not None:
+                path2 = os.path.join(IMAGE_DIR, f"{st.session_state.pet_name}_photo2.jpg")
+                if safe_save_image(photo2, path2):
+                    st.image(path2, caption=t("📷 2枚目", "📷 Photo 2"), use_container_width=True)
 
     # ページ 2: 基本事項
     elif selected == t("2. 基本事項", "2. Basic Info"):
-        st.markdown("<h3 style='color:#2c3e50;'>📘 基本情報の記録 / Basic Info</h3>", unsafe_allow_html=True)
+        st.header(t("📘 基本情報の記録", "📘 Basic Info"))
 
+        # 既存のデータがあれば取得
+        existing_data = df_save[(df_save["名前"] == st.session_state.pet_name) & 
+                               (df_save["ページ"] == "基本事項")]
+        
+        default_birth_date = datetime.now().date()
+        default_birth_time = datetime.now().time()
+        default_birth_place = ""
+        default_weather = ""
+        default_birth_weight = ""
+        default_birth_height = ""
+        default_message = ""
+        
+        if not existing_data.empty:
+            try:
+                row = existing_data.iloc[0]
+                default_birth_date = pd.to_datetime(row.get("生まれた日", default_birth_date)).date()
+                default_birth_time = pd.to_datetime(row.get("生まれた時間", default_birth_time)).time()
+                default_birth_place = row.get("場所", "")
+                default_weather = row.get("天気", "")
+                default_birth_weight = row.get("体重", "")
+                default_birth_height = row.get("身長", "")
+                default_message = row.get("メッセージ", "")
+            except Exception as e:
+                logging.error(f"既存データの読み込みエラー: {str(e)}")
+        
         col1, col2 = st.columns(2)
         with col1:
-            birth_date = st.date_input(t("生まれた日", "Date of Birth"))
-            birth_time = st.time_input(t("生まれた時間", "Time of Birth"))
-            birth_place = st.text_input(t("生まれた場所", "Place of Birth"))
-            weather = st.text_input(t("その日の天気", "Weather on the day"))
+            birth_date = st.date_input(t("生まれた日", "Date of Birth"), value=default_birth_date)
+            birth_time = st.time_input(t("生まれた時間", "Time of Birth"), value=default_birth_time)
+            birth_place = st.text_input(t("生まれた場所", "Place of Birth"), value=default_birth_place)
+            weather = st.text_input(t("その日の天気", "Weather on the day"), value=default_weather)
         with col2:
-            birth_weight = st.text_input(t("出生時の体重", "Birth Weight"))
-            birth_height = st.text_input(t("出生時の身長", "Birth Height"))
+            birth_weight = st.text_input(t("出生時の体重", "Birth Weight"), value=default_birth_weight)
+            birth_height = st.text_input(t("出生時の身長", "Birth Height"), value=default_birth_height)
 
-        message = st.text_area(t("🐾 ペットへのメッセージ", "🐾 Message to your pet"))
+        message = st.text_area(t("🐾 ペットへのメッセージ", "🐾 Message to your pet"), value=default_message)
 
         if st.button(t("保存する", "Save"), key="save_basic"):
             df_new = pd.DataFrame([{
@@ -201,24 +246,54 @@ elif st.session_state.page == "main":
                 "身長": birth_height,
                 "メッセージ": message
             }])
-            df_all = pd.concat([df_save, df_new], ignore_index=True)
-            df_all.to_csv(SAVE_FILE, index=False)
-            st.success(t("✅ 保存しました！", "✅ Saved!"))
+            
+            # 既存の行を削除し、新しいデータを追加
+            df_filtered = df_save[(df_save["名前"] != st.session_state.pet_name) | 
+                                (df_save["ページ"] != "基本事項")]
+            df_all = pd.concat([df_filtered, df_new], ignore_index=True)
+            
+            if safe_save_dataframe(df_all, SAVE_FILE):
+                st.success(t("✅ 保存しました！", "✅ Saved!"))
+        
+        # 編集可能データの表示
+        editable_data(df_save[(df_save["名前"] == st.session_state.pet_name) & 
+                            (df_save["ページ"] == "基本事項")], "basic", "基本事項")
 
-        editable_data(df_save[df_save["ページ"] == "基本事項"], "basic", "基本事項")
     # ページ 3: 手形の記録
     elif selected == t("3. 手形の記録", "3. Handprint"):
-        st.markdown("<h3 style='color:#2c3e50;'>✋ 手形の記録 / Handprint</h3>", unsafe_allow_html=True)
+        st.header(t("✋ 手形の記録", "✋ Handprint"))
 
-        hand_photo = st.file_uploader(t("📸 手形の写真をアップロード", "📸 Upload handprint photo"), type=["jpg", "jpeg", "png"], key="hand")
-        hand_date = st.date_input(t("撮影日", "Date of Photo"))
-        hand_comment = st.text_area(t("コメント", "Comment"))
+        # 既存データを取得
+        existing_hand = df_save[(df_save["名前"] == st.session_state.pet_name) & 
+                               (df_save["ページ"] == "手形")]
+        
+        default_hand_date = datetime.now().date()
+        default_hand_comment = ""
+        
+        if not existing_hand.empty:
+            try:
+                row = existing_hand.iloc[0]
+                default_hand_date = pd.to_datetime(row.get("日付", default_hand_date)).date()
+                default_hand_comment = row.get("コメント", "")
+            except Exception as e:
+                logging.error(f"手形データの読み込みエラー: {str(e)}")
 
+        hand_photo = st.file_uploader(
+            t("📸 手形の写真をアップロード", "📸 Upload handprint photo"), 
+            type=["jpg", "jpeg", "png"], 
+            key="hand"
+        )
+        
+        hand_date = st.date_input(t("撮影日", "Date of Photo"), value=default_hand_date)
+        hand_comment = st.text_area(t("コメント", "Comment"), value=default_hand_comment)
+
+        # 既存の画像があれば表示
+        hand_path = os.path.join(IMAGE_DIR, f"{st.session_state.pet_name}_hand.jpg")
         if hand_photo:
-            hand_path = os.path.join(IMAGE_DIR, f"{st.session_state.pet_name}_hand.jpg")
-            with open(hand_path, "wb") as f:
-                f.write(hand_photo.read())
-            st.image(hand_path, caption=t("✋ 手形写真", "✋ Handprint Photo"), use_container_width=True)
+            if safe_save_image(hand_photo, hand_path):
+                st.image(hand_path, caption=t("✋ 手形写真", "✋ Handprint Photo"), use_container_width=True)
+        elif os.path.exists(hand_path):
+            st.image(hand_path, caption=t("✋ 保存済みの手形写真", "✋ Saved Handprint Photo"), use_container_width=True)
 
         if st.button(t("保存する", "Save"), key="save_hand"):
             df_new = pd.DataFrame([{
@@ -227,23 +302,54 @@ elif st.session_state.page == "main":
                 "日付": hand_date,
                 "コメント": hand_comment
             }])
-            df_all = pd.concat([df_save, df_new], ignore_index=True)
-            df_all.to_csv(SAVE_FILE, index=False)
-            st.success(t("✅ 手形情報を保存しました！", "✅ Handprint saved!"))
+            
+            # 既存の行を削除し、新しいデータを追加
+            df_filtered = df_save[(df_save["名前"] != st.session_state.pet_name) | 
+                                (df_save["ページ"] != "手形")]
+            df_all = pd.concat([df_filtered, df_new], ignore_index=True)
+            
+            if safe_save_dataframe(df_all, SAVE_FILE):
+                st.success(t("✅ 手形情報を保存しました！", "✅ Handprint saved!"))
 
-        editable_data(df_save[df_save["ページ"] == "手形"], "hand", "手形")
+        editable_data(df_save[(df_save["名前"] == st.session_state.pet_name) & 
+                            (df_save["ページ"] == "手形")], "hand", "手形")
 
     # ページ 4: 初めてできたこと
     elif selected == t("4. 初めてできたこと", "4. First Milestones"):
-        st.markdown("<h3 style='color:#2c3e50;'>🎉 初めてできた記念 / First Milestones</h3>", unsafe_allow_html=True)
+        st.header(t("🎉 初めてできた記念", "🎉 First Milestones"))
 
+        # 既存データを取得
+        existing_firsts = df_save[(df_save["名前"] == st.session_state.pet_name) & 
+                                (df_save["ページ"] == "初めてできたこと")]
+        
         records = []
-        for i in range(10):
-            with st.expander(t(f"記録 {i+1}", f"Record {i+1}")):
-                date_input = st.date_input(t(f"日付{i+1}", f"Date {i+1}"), key=f"date{i}")
-                weekday = date_input.strftime("%A")
-                what = st.text_input(t(f"できたこと{i+1}", f"What they did {i+1}"), key=f"what{i}")
-                if what:
+        with st.form(key="milestone_form"):
+            for i in range(5):  # 入力フォームを5つに減らし、フォームで囲む
+                col1, col2 = st.columns([1, 3])
+                with col1:
+                    date_input = st.date_input(
+                        t(f"日付{i+1}", f"Date {i+1}"), 
+                        key=f"date{i}",
+                        value=datetime.now().date()
+                    )
+                    weekday = date_input.strftime("%A")
+                
+                with col2:
+                    # 既存データがあれば、それを初期値として表示
+                    default_what = ""
+                    if not existing_firsts.empty and i < len(existing_firsts):
+                        try:
+                            default_what = existing_firsts.iloc[i]["できたこと"]
+                        except:
+                            pass
+                    
+                    what = st.text_input(
+                        t(f"できたこと{i+1}", f"What they did {i+1}"), 
+                        key=f"what{i}",
+                        value=default_what
+                    )
+                
+                if what:  # 空でない場合のみ記録
                     records.append({
                         "名前": st.session_state.pet_name,
                         "ページ": "初めてできたこと",
@@ -251,17 +357,27 @@ elif st.session_state.page == "main":
                         "曜日": weekday,
                         "できたこと": what
                     })
+            
+            submit_button = st.form_submit_button(t("保存する", "Save"))
+            
+            if submit_button and records:
+                df_new = pd.DataFrame(records)
+                
+                # 既存の行を削除し、新しいデータを追加
+                df_filtered = df_save[(df_save["名前"] != st.session_state.pet_name) | 
+                                    (df_save["ページ"] != "初めてできたこと")]
+                df_all = pd.concat([df_filtered, df_new], ignore_index=True)
+                
+                if safe_save_dataframe(df_all, SAVE_FILE):
+                    st.success(t("✅ 初めてできたことを保存しました！", "✅ First milestones saved!"))
+        
+        # 追加の項目が必要な場合はこちらから入力
+        with st.expander(t("🔍 さらに記録を追加", "🔍 Add more records")):
+            editable_data(existing_firsts, "firsts", "初めてできたこと")
 
-        if st.button(t("保存する", "Save"), key="save_firsts"):
-            df_new = pd.DataFrame(records)
-            df_all = pd.concat([df_save, df_new], ignore_index=True)
-            df_all.to_csv(SAVE_FILE, index=False)
-            st.success(t("✅ 初めてできたことを保存しました！", "✅ First milestones saved!"))
-
-        editable_data(df_save[df_save["ページ"] == "初めてできたこと"], "firsts", "初めてできたこと")
     # ページ 5: 成長目安
     elif selected == t("5. 成長目安", "5. Growth Guide"):
-        st.markdown("<h3 style='color:#2c3e50;'>📈 ペットの成長目安 / Growth Guide</h3>", unsafe_allow_html=True)
+        st.header(t("📈 ペットの成長目安", "📈 Growth Guide"))
         st.info(t(
             "このページは現在準備中です。今後、年齢や行動に応じた成長チェックを実装予定です。",
             "This page is under preparation. Growth checks based on age and behavior will be implemented."
@@ -269,24 +385,43 @@ elif st.session_state.page == "main":
 
     # ページ 6: 誕生日メッセージ
     elif selected == t("6. 誕生日メッセージ", "6. Birthday Message"):
-        st.markdown("<h3 style='color:#2c3e50;'>🎂 1歳の誕生日 / 1st Birthday</h3>", unsafe_allow_html=True)
+        st.header(t("🎂 1歳の誕生日", "🎂 1st Birthday"))
+
+        # 既存データを取得
+        existing_bday = df_save[(df_save["名前"] == st.session_state.pet_name) & 
+                               (df_save["ページ"] == "誕生日メッセージ")]
+        
+       # 誕生日メッセージの取得部分を修正
+        default_bday_msg = ""
+        if not existing_bday.empty:
+           try:
+              # NaNを空文字列に変換して対応
+              msg = existing_bday.iloc[0].get("メッセージ", "")
+              default_bday_msg = "" if pd.isna(msg) else msg
+           except Exception as e:
+            logging.error(f"誕生日メッセージの読み込みエラー: {str(e)}")
 
         birthday_photo = st.file_uploader(
             t("🎉 写真をアップロード", "🎉 Upload a birthday photo"),
             type=["jpg", "jpeg", "png"],
             key="bday"
         )
-        birthday_msg = st.text_area(t("🎁 ペットへのメッセージ", "🎁 Message to your pet"))
+        
+        birthday_msg = st.text_area(
+            t("🎁 ペットへのメッセージ", "🎁 Message to your pet"), 
+            value=default_bday_msg
+        )
 
+        # 既存の画像があれば表示、新しくアップロードされた場合は保存して表示
+        bday_path = os.path.join(IMAGE_DIR, f"{st.session_state.pet_name}_bday.jpg")
+        
         if birthday_photo:
-         path = os.path.join(IMAGE_DIR, f"{st.session_state.pet_name}_bday.jpg")
-         with open(path, "wb") as f:
-          f.write(birthday_photo.read())
-    
-         st.markdown("##### 🎉 誕生日写真 / Birthday Photo")
-         st.image(path, use_container_width=True)
-         st.markdown("<br>", unsafe_allow_html=True)
-
+            if safe_save_image(birthday_photo, bday_path):
+                st.subheader("🎉 " + t("誕生日写真", "Birthday Photo"))
+                st.image(bday_path, use_container_width=True)
+        elif os.path.exists(bday_path):
+            st.subheader("🎉 " + t("保存済みの誕生日写真", "Saved Birthday Photo"))
+            st.image(bday_path, use_container_width=True)
 
         if st.button(t("保存する", "Save"), key="save_birthday"):
             df_new = pd.DataFrame([{
@@ -294,111 +429,250 @@ elif st.session_state.page == "main":
                 "ページ": "誕生日メッセージ",
                 "メッセージ": birthday_msg
             }])
-            df_all = pd.concat([df_save, df_new], ignore_index=True)
-            df_all.to_csv(SAVE_FILE, index=False)
-            st.success(t("✅ 誕生日の記録を保存しました！", "✅ Birthday message saved!"))
+            
+            # 既存の行を削除し、新しいデータを追加
+            df_filtered = df_save[(df_save["名前"] != st.session_state.pet_name) | 
+                                (df_save["ページ"] != "誕生日メッセージ")]
+            df_all = pd.concat([df_filtered, df_new], ignore_index=True)
+            
+            if safe_save_dataframe(df_all, SAVE_FILE):
+                st.success(t("✅ 誕生日の記録を保存しました！", "✅ Birthday message saved!"))
 
-        editable_data(df_save[df_save["ページ"] == "誕生日メッセージ"], "bday", "誕生日メッセージ")
+        editable_data(df_save[(df_save["名前"] == st.session_state.pet_name) & 
+                            (df_save["ページ"] == "誕生日メッセージ")], "bday", "誕生日メッセージ")
+
     # ページ 7: 成長日記
     elif selected == t("7. 成長日記", "7. Growth Diary"):
-        st.markdown("<h3 style='color:#2c3e50;'>🗓 成長日記 / Growth Diary</h3>", unsafe_allow_html=True)
+        st.header(t("🗓 成長日記", "🗓 Growth Diary"))
 
         # 生まれた日を取得
-        if os.path.exists(SAVE_FILE):
-            df_info = pd.read_csv(SAVE_FILE)
-            birth_row = df_info[(df_info["名前"] == st.session_state.pet_name) & (df_info["ページ"] == "基本事項")]
-            if not birth_row.empty:
+        birth_date = None
+        birth_row = df_save[(df_save["名前"] == st.session_state.pet_name) & (df_save["ページ"] == "基本事項")]
+        
+        if not birth_row.empty:
+            try:
                 birth_date = pd.to_datetime(birth_row.iloc[0]["生まれた日"])
-            else:
-                st.error(t("⚠️ 基本情報に生まれた日が保存されていません。", "⚠️ Birth date not found in basic info."))
-                birth_date = None
+            except Exception as e:
+                st.warning(t("⚠️ 基本情報に生まれた日が正しく保存されていません。正しい形式で再入力してください。", 
+                            "⚠️ Birth date is not correctly saved in basic info. Please re-enter in correct format."))
+                logging.error(f"生まれた日の読み込みエラー: {str(e)}")
         else:
-            st.error(t("⚠️ 基本情報ファイルが存在しません。", "⚠️ Basic info file not found."))
-            birth_date = None
-
-        selected_date = st.date_input(t("📅 日付を選択", "📅 Select Date"), value=date.today())
-        selected_time = st.time_input(t("🕒 時間を選択", "🕒 Select Time"), value=datetime.now().time())
-        dt = datetime.combine(selected_date, selected_time)
-
-        if birth_date:
-            days_old = (dt.date() - birth_date.date()).days
-            st.markdown(t(f"**🐣 生後 {days_old} 日目の記録**", f"**🐣 Day {days_old} since birth**"))
-
-        col1, col2 = st.columns(2)
-        with col1:
-            meal = st.text_input(t("🍽 食事の内容", "🍽 Meal Details"))
-            meal_grams = st.number_input(t("グラム数 (g)", "Amount (g)"), 0, 500, step=5)
-            potty = st.text_input(t("🚽 おしっこ・うんち", "🚽 Potty"))
-        with col2:
-            walk = st.text_input(t("🐕 散歩", "🐕 Walk"))
-            sleep = st.text_input(t("😴 睡眠（例：22:00〜6:00）", "😴 Sleep (e.g. 10pm–6am)"))
+            st.warning(t("⚠️ 基本情報に生まれた日が保存されていません。基本情報ページで設定してください。", 
+                        "⚠️ Birth date not found in basic info. Please set it in Basic Info page."))
+        
+        # 成長日記入力フォーム
+        with st.form(key="growth_diary_form"):
+            selected_date = st.date_input(t("📅 日付を選択", "📅 Select Date"), value=date.today())
+            selected_time = st.time_input(t("🕒 時間を選択", "🕒 Select Time"), value=datetime.now().time())
+            dt = datetime.combine(selected_date, selected_time)
+            
+            days_old = None
+            if birth_date:
+                days_old = (dt.date() - birth_date.date()).days
+                st.markdown(t(f"**🐣 生後 {days_old} 日目の記録**", f"**🐣 Day {days_old} since birth**"))
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                meal = st.text_input(t("🍽 食事の内容", "🍽 Meal Details"))
+                meal_grams = st.number_input(t("グラム数 (g)", "Amount (g)"), 0, 500, step=5)
+                potty = st.text_input(t("🚽 おしっこ・うんち", "🚽 Potty"))
+            with col2:
+                walk = st.text_input(t("🐕 散歩", "🐕 Walk"))
+                sleep = st.text_input(t("😴 睡眠（例：22:00〜6:00）", "😴 Sleep (e.g. 10pm–6am)"))
+                
             memo = st.text_area(t("📝 MEMO", "📝 Memo"))
-
-        if st.button(t("記録を保存する", "Save Record"), key="save_growth_record"):
-            new_log = pd.DataFrame([{
-                "名前": st.session_state.pet_name,
-                "日付時間": dt,
-                "生後日数": days_old,
-                "食事内容": meal,
-                "グラム": meal_grams,
-                "おしっこ・うんち": potty,
-                "散歩": walk,
-                "睡眠": sleep,
-                "MEMO": memo
-            }])
-            if os.path.exists("growth_log.csv"):
-                old_log = pd.read_csv("growth_log.csv")
-                full_log = pd.concat([old_log, new_log], ignore_index=True)
-            else:
-                full_log = new_log
-            full_log.to_csv("growth_log.csv", index=False)
-            st.success(t("✅ 記録を保存しました！", "✅ Record saved!"))
+            
+            submit_button = st.form_submit_button(t("記録を保存する", "Save Record"))
+            
+            if submit_button:
+                # 日記の保存処理
+                try:
+                    new_log = pd.DataFrame([{
+                        "名前": st.session_state.pet_name,
+                        "日付時間": dt,
+                        "生後日数": days_old,
+                        "食事内容": meal,
+                        "グラム": meal_grams,
+                        "おしっこ・うんち": potty,
+                        "散歩": walk,
+                        "睡眠": sleep,
+                        "MEMO": memo
+                    }])
+                    
+                    # 既存のログファイルがあれば読み込む
+                    if os.path.exists(GROWTH_LOG_FILE):
+                        old_log = safe_load_dataframe(GROWTH_LOG_FILE)
+                        full_log = pd.concat([old_log, new_log], ignore_index=True)
+                    else:
+                        full_log = new_log
+                    
+                    if safe_save_dataframe(full_log, GROWTH_LOG_FILE):
+                        st.success(t("✅ 記録を保存しました！", "✅ Record saved!"))
+                except Exception as e:
+                    st.error(t(f"エラーが発生しました: {str(e)}", f"An error occurred: {str(e)}"))
+                    logging.error(f"成長記録保存エラー: {str(e)}\n{traceback.format_exc()}")
+            
         # 🔍 成長記録の表示・編集
-        if os.path.exists("growth_log.csv"):
-            st.divider()
-            st.subheader(t("🔍 保存された成長記録", "🔍 Saved Growth Records"))
-
-            df_growth = pd.read_csv("growth_log.csv")
-            df_growth["日付時間"] = pd.to_datetime(df_growth["日付時間"])
-            df_growth = df_growth[df_growth["名前"] == st.session_state.pet_name]
-
-            date_filter = st.date_input(t("📅 表示したい日付を選択（複数選択可）", "📅 Select dates to filter (multiple allowed)"), [])
-            if date_filter:
-                df_growth = df_growth[df_growth["日付時間"].dt.date.isin(date_filter)]
-
-            keyword = st.text_input(t("🔍 キーワード検索（食事、メモなど）", "🔍 Keyword search (meal, memo, etc.)"))
-            if keyword:
-                df_growth = df_growth[df_growth.apply(lambda row: keyword.lower() in str(row).lower(), axis=1)]
-
-            edited = st.data_editor(df_growth, num_rows="dynamic", use_container_width=True)
-
-            if st.button(t("変更を保存する", "Save Changes"), key="save_growth_edit"):
-                full_log = pd.read_csv("growth_log.csv")
-                others = full_log[full_log["名前"] != st.session_state.pet_name]
-                combined = pd.concat([others, edited], ignore_index=True)
-                combined.to_csv("growth_log.csv", index=False)
-                st.success(t("✅ 編集内容を保存しました！", "✅ Changes saved!"))
+        st.divider()
+        st.subheader(t("🔍 保存された成長記録", "🔍 Saved Growth Records"))
+        
+        if os.path.exists(GROWTH_LOG_FILE):
+            try:
+                df_growth = safe_load_dataframe(GROWTH_LOG_FILE)
+                if df_growth.empty:
+                    st.info(t("📭 まだ記録がありません", "📭 No records yet"))
+                else:
+                    # データの前処理
+                    df_growth["日付時間"] = pd.to_datetime(df_growth["日付時間"], errors='coerce')
+                    df_growth = df_growth[df_growth["名前"] == st.session_state.pet_name]
+                    
+                    if df_growth.empty:
+                        st.info(t("📭 このペットの記録はまだありません", "📭 No records for this pet yet"))
+                    else:
+                        # タブでフィルタと編集を分ける
+                        tab1, tab2 = st.tabs([
+                            t("🔍 記録を検索・表示", "🔍 Search & View Records"),
+                            t("✏️ 記録を編集", "✏️ Edit Records")
+                        ])
+                        
+                        with tab1:
+                            # 検索フィルタ
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                date_filter = st.date_input(
+                                    t("📅 表示したい日付", "📅 Filter by date"),
+                                    value=[],
+                                    key="date_filter"
+                                )
+                            with col2:
+                                keyword = st.text_input(
+                                    t("🔍 キーワード検索", "🔍 Keyword search"),
+                                    key="keyword_filter"
+                                )
+                            
+                            filtered_df = df_growth.copy()
+                            
+                            # 日付フィルタの適用
+                            if date_filter:
+                                filtered_df = filtered_df[filtered_df["日付時間"].dt.date.isin(date_filter)]
+                            
+                            # キーワードフィルタの適用
+                            if keyword:
+                                filtered_df = filtered_df[filtered_df.astype(str).apply(
+                                    lambda row: keyword.lower() in ' '.join(row.values.astype(str)).lower(), axis=1
+                                )]
+                            
+                            # 結果の表示
+                            if not filtered_df.empty:
+                                st.dataframe(filtered_df, use_container_width=True)
+                            else:
+                                st.info(t("🔍 条件に一致する記録が見つかりませんでした", 
+                                          "🔍 No records found matching your criteria"))
+                        
+                        with tab2:
+                            edited = st.data_editor(
+                                df_growth, 
+                                num_rows="dynamic", 
+                                use_container_width=True,
+                                key="growth_editor"
+                            )
+                            
+                            if st.button(t("変更を保存する", "Save Changes"), key="save_growth_edit"):
+                                # 全体のログから該当ペットの記録を削除し、編集された記録を追加
+                                try:
+                                    full_log = safe_load_dataframe(GROWTH_LOG_FILE)
+                                    others = full_log[full_log["名前"] != st.session_state.pet_name]
+                                    combined = pd.concat([others, edited], ignore_index=True)
+                                    
+                                    if safe_save_dataframe(combined, GROWTH_LOG_FILE):
+                                        st.success(t("✅ 編集内容を保存しました！", "✅ Changes saved!"))
+                                except Exception as e:
+                                    st.error(t(f"エラーが発生しました: {str(e)}", f"An error occurred: {str(e)}"))
+                                    logging.error(f"成長記録編集エラー: {str(e)}\n{traceback.format_exc()}")
+                                    
+            except Exception as e:
+                st.error(t(f"データの読み込み中にエラーが発生しました: {str(e)}", 
+                           f"An error occurred while loading data: {str(e)}"))
+                logging.error(f"成長記録読み込みエラー: {str(e)}\n{traceback.format_exc()}")
+        else:
+            st.info(t("📝 まだ記録がありません。上のフォームから記録を追加してください。", 
+                       "📝 No records yet. Add records using the form above."))
 
     # ページ 8: メモ欄
     elif selected == t("8. メモ欄", "8. Notes"):
-        st.markdown("<h3 style='color:#2c3e50;'>📝 自由メモ欄 / Free Notes</h3>", unsafe_allow_html=True)
+        st.header(t("📝 自由メモ欄", "📝 Free Notes"))
 
-        memo_input = st.text_area(t("気づいたこと、生活のことなどを自由に記入できます", "You can freely write your observations, lifestyle notes, etc."))
+        # 既存のメモを取得
+        existing_memo = ""
+        
+        if os.path.exists(MEMO_LOG_FILE):
+            memo_df = safe_load_dataframe(MEMO_LOG_FILE)
+            memo_entries = memo_df[memo_df["名前"] == st.session_state.pet_name]
+            
+            if not memo_entries.empty:
+                try:
+                    # 最新のメモを表示
+                    memo_entries["日付"] = pd.to_datetime(memo_entries["日付"], errors='coerce')
+                    latest_memo = memo_entries.sort_values("日付", ascending=False).iloc[0]
+                    existing_memo = latest_memo.get("メモ", "")
+                except Exception as e:
+                    logging.error(f"メモデータの読み込みエラー: {str(e)}")
 
-        if st.button(t("保存する", "Save"), key="save_memo"):
-            memo_df = pd.DataFrame([{
-                "名前": st.session_state.pet_name,
-                "ページ": "メモ欄",
-                "日付": date.today(),
-                "メモ": memo_input
-            }])
-            if os.path.exists("memo_log.csv"):
-                existing = pd.read_csv("memo_log.csv")
-                memo_df = pd.concat([existing, memo_df], ignore_index=True)
-            memo_df.to_csv("memo_log.csv", index=False)
-            st.success(t("✅ メモを保存しました！", "✅ Memo saved!"))
+        with st.form(key="memo_form"):
+            memo_input = st.text_area(
+                t("気づいたこと、生活のことなどを自由に記入できます", 
+                  "You can freely write your observations, lifestyle notes, etc."),
+                value=existing_memo,
+                height=200
+            )
+            
+            submit_button = st.form_submit_button(t("保存する", "Save"))
+            
+            if submit_button:
+                try:
+                    memo_df = pd.DataFrame([{
+                        "名前": st.session_state.pet_name,
+                        "ページ": "メモ欄",
+                        "日付": date.today(),
+                        "メモ": memo_input
+                    }])
+                    
+                    if os.path.exists(MEMO_LOG_FILE):
+                        existing = safe_load_dataframe(MEMO_LOG_FILE)
+                        memo_df = pd.concat([existing, memo_df], ignore_index=True)
+                    
+                    if safe_save_dataframe(memo_df, MEMO_LOG_FILE):
+                        st.success(t("✅ メモを保存しました！", "✅ Memo saved!"))
+                except Exception as e:
+                    st.error(t(f"エラーが発生しました: {str(e)}", f"An error occurred: {str(e)}"))
+                    logging.error(f"メモ保存エラー: {str(e)}\n{traceback.format_exc()}")
 
-        if os.path.exists("memo_log.csv"):
-            df_memo = pd.read_csv("memo_log.csv")
-            df_memo = df_memo[df_memo["名前"] == st.session_state.pet_name]
-            editable_data(df_memo, "memo", "メモ欄")
+        # メモの履歴表示
+        if os.path.exists(MEMO_LOG_FILE):
+            try:
+                df_memo = safe_load_dataframe(MEMO_LOG_FILE)
+                df_memo = df_memo[df_memo["名前"] == st.session_state.pet_name]
+                
+                if not df_memo.empty:
+                    st.divider()
+                    st.subheader(t("📚 メモ履歴", "📚 Memo History"))
+                    
+                    # 日付でソート
+                    df_memo["日付"] = pd.to_datetime(df_memo["日付"], errors='coerce')
+                    df_memo = df_memo.sort_values("日付", ascending=False)
+                    
+                    editable_data(df_memo, "memo", "メモ欄")
+                    
+            except Exception as e:
+                st.error(t(f"メモ履歴の表示中にエラーが発生しました: {str(e)}", 
+                          f"An error occurred while displaying memo history: {str(e)}"))
+                logging.error(f"メモ履歴表示エラー: {str(e)}\n{traceback.format_exc()}")
+
+# フッター
+st.markdown("""
+<div style="text-align: center; margin-top: 30px; padding: 10px; border-top: 1px solid #ddd;">
+    <p style="color: #555; font-size: 14px;">
+        🐾 ペット成長日記 / Pet Growth Diary © 2025
+    </p>
+</div>
+""", unsafe_allow_html=True)
