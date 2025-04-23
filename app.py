@@ -47,21 +47,36 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# データフレームの安全な初期化（空データの準備）
+def get_empty_dataframe(datatype):
+    """用途に応じた空のデータフレームを返す"""
+    if datatype == "main":
+        return pd.DataFrame(columns=["名前", "ページ"])
+    elif datatype == "growth":
+        return pd.DataFrame(columns=["名前", "日付時間", "生後日数", "食事内容", "グラム", "おしっこ・うんち", "散歩", "睡眠", "MEMO"])
+    elif datatype == "memo":
+        return pd.DataFrame(columns=["名前", "ページ", "日付", "メモ"])
+    else:
+        return pd.DataFrame()
+
 # エラーハンドリング用の共通関数
-def safe_load_dataframe(file_path, default_empty=True):
+def safe_load_dataframe(file_path, datatype="main"):
     """安全にデータフレームを読み込む関数"""
     try:
         if os.path.exists(file_path):
-            return pd.read_csv(file_path)
-        elif default_empty:
-            return pd.DataFrame()
+            df = pd.read_csv(file_path)
+            # 必要なカラムが存在するか確認し、なければ追加
+            empty_df = get_empty_dataframe(datatype)
+            for col in empty_df.columns:
+                if col not in df.columns:
+                    df[col] = ""
+            return df
         else:
-            st.warning("ファイルが見つかりません: " + file_path)
-            return pd.DataFrame()
+            return get_empty_dataframe(datatype)
     except Exception as e:
         st.error("データの読み込み中にエラーが発生しました: " + str(e))
         logging.error(f"データ読み込みエラー: {str(e)}\n{traceback.format_exc()}")
-        return pd.DataFrame()
+        return get_empty_dataframe(datatype)
 
 def safe_save_dataframe(df, file_path):
     """安全にデータフレームを保存する関数"""
@@ -85,6 +100,18 @@ def safe_save_image(uploaded_file, path):
         st.error("画像の保存中にエラーが発生しました: " + str(e))
         logging.error(f"画像保存エラー: {str(e)}\n{traceback.format_exc()}")
         return False
+
+# データフレームから安全に値を取得
+def safe_get_value(df, row_idx, col_name, default=""):
+    """データフレームから安全に値を取得する"""
+    try:
+        if df.empty or row_idx >= len(df) or col_name not in df.columns:
+            return default
+        value = df.iloc[row_idx][col_name]
+        return default if pd.isna(value) else value
+    except Exception as e:
+        logging.error(f"値の取得エラー: {str(e)}")
+        return default
 
 # セッション初期化
 if "pet_name" not in st.session_state:
@@ -130,7 +157,18 @@ def editable_data(df_page, key_prefix, page_label):
         return
     
     try:
-        editable_df = df_page.drop(columns=["名前", "ページ"], errors="ignore")
+        # 安全に不要なカラムを削除
+        columns_to_drop = []
+        if "名前" in df_page.columns:
+            columns_to_drop.append("名前")
+        if "ページ" in df_page.columns:
+            columns_to_drop.append("ページ")
+            
+        if columns_to_drop:
+            editable_df = df_page.drop(columns=columns_to_drop)
+        else:
+            editable_df = df_page.copy()
+            
         edited = st.data_editor(editable_df, key=f"edit_table_{key_prefix}", use_container_width=True)
         
         if st.button(t("変更を保存", "Save Changes"), key=f"save_edit_{key_prefix}"):
@@ -140,7 +178,13 @@ def editable_data(df_page, key_prefix, page_label):
             for col in edited.columns:
                 new_df[col] = edited[col]
                 
-            not_this_page = df_all[df_all["ページ"] != page_label]
+            # 安全にフィルタリング
+            try:
+                not_this_page = df_all[df_all["ページ"] != page_label]
+            except Exception as e:
+                logging.error(f"フィルタリングエラー: {str(e)}")
+                not_this_page = get_empty_dataframe("main")
+                
             updated = pd.concat([not_this_page, new_df], ignore_index=True)
             
             if safe_save_dataframe(updated, SAVE_FILE):
@@ -170,7 +214,7 @@ elif st.session_state.page == "main":
     st.markdown(f"## 🐶 {st.session_state.pet_name} のページ / {st.session_state.pet_name}'s Page")
 
     # メインのデータフレームを読み込み
-    df_save = safe_load_dataframe(SAVE_FILE)
+    df_save = safe_load_dataframe(SAVE_FILE, "main")
 
     # ページ 1: 写真ページ
     if selected == t("1. 写真ページ", "1. Photo Page"):
@@ -197,9 +241,13 @@ elif st.session_state.page == "main":
     elif selected == t("2. 基本事項", "2. Basic Info"):
         st.header(t("📘 基本情報の記録", "📘 Basic Info"))
 
-        # 既存のデータがあれば取得
-        existing_data = df_save[(df_save["名前"] == st.session_state.pet_name) & 
-                               (df_save["ページ"] == "基本事項")]
+        # 既存のデータを安全に取得
+        try:
+            existing_data = df_save[(df_save["名前"] == st.session_state.pet_name) & 
+                                  (df_save["ページ"] == "基本事項")]
+        except Exception as e:
+            logging.error(f"基本情報フィルタリングエラー: {str(e)}")
+            existing_data = pd.DataFrame()
         
         default_birth_date = datetime.now().date()
         default_birth_time = datetime.now().time()
@@ -211,14 +259,13 @@ elif st.session_state.page == "main":
         
         if not existing_data.empty:
             try:
-                row = existing_data.iloc[0]
-                default_birth_date = pd.to_datetime(row.get("生まれた日", default_birth_date)).date()
-                default_birth_time = pd.to_datetime(row.get("生まれた時間", default_birth_time)).time()
-                default_birth_place = row.get("場所", "")
-                default_weather = row.get("天気", "")
-                default_birth_weight = row.get("体重", "")
-                default_birth_height = row.get("身長", "")
-                default_message = row.get("メッセージ", "")
+                default_birth_date = pd.to_datetime(safe_get_value(existing_data, 0, "生まれた日", default_birth_date)).date()
+                default_birth_time = pd.to_datetime(safe_get_value(existing_data, 0, "生まれた時間", default_birth_time)).time()
+                default_birth_place = safe_get_value(existing_data, 0, "場所", "")
+                default_weather = safe_get_value(existing_data, 0, "天気", "")
+                default_birth_weight = safe_get_value(existing_data, 0, "体重", "")
+                default_birth_height = safe_get_value(existing_data, 0, "身長", "")
+                default_message = safe_get_value(existing_data, 0, "メッセージ", "")
             except Exception as e:
                 logging.error(f"既存データの読み込みエラー: {str(e)}")
         
@@ -248,33 +295,47 @@ elif st.session_state.page == "main":
             }])
             
             # 既存の行を削除し、新しいデータを追加
-            df_filtered = df_save[(df_save["名前"] != st.session_state.pet_name) | 
-                                (df_save["ページ"] != "基本事項")]
+            try:
+                df_filtered = df_save[(df_save["名前"] != st.session_state.pet_name) | 
+                                    (df_save["ページ"] != "基本事項")]
+            except Exception as e:
+                logging.error(f"フィルタリングエラー: {str(e)}")
+                df_filtered = get_empty_dataframe("main")
+                
             df_all = pd.concat([df_filtered, df_new], ignore_index=True)
             
             if safe_save_dataframe(df_all, SAVE_FILE):
                 st.success(t("✅ 保存しました！", "✅ Saved!"))
         
         # 編集可能データの表示
-        editable_data(df_save[(df_save["名前"] == st.session_state.pet_name) & 
-                            (df_save["ページ"] == "基本事項")], "basic", "基本事項")
+        try:
+            editable_df = df_save[(df_save["名前"] == st.session_state.pet_name) & 
+                                (df_save["ページ"] == "基本事項")]
+        except Exception as e:
+            logging.error(f"フィルタリングエラー: {str(e)}")
+            editable_df = pd.DataFrame()
+            
+        editable_data(editable_df, "basic", "基本事項")
 
     # ページ 3: 手形の記録
     elif selected == t("3. 手形の記録", "3. Handprint"):
         st.header(t("✋ 手形の記録", "✋ Handprint"))
 
-        # 既存データを取得
-        existing_hand = df_save[(df_save["名前"] == st.session_state.pet_name) & 
-                               (df_save["ページ"] == "手形")]
+        # 既存データを安全に取得
+        try:
+            existing_hand = df_save[(df_save["名前"] == st.session_state.pet_name) & 
+                                  (df_save["ページ"] == "手形")]
+        except Exception as e:
+            logging.error(f"手形データフィルタリングエラー: {str(e)}")
+            existing_hand = pd.DataFrame()
         
         default_hand_date = datetime.now().date()
         default_hand_comment = ""
         
         if not existing_hand.empty:
             try:
-                row = existing_hand.iloc[0]
-                default_hand_date = pd.to_datetime(row.get("日付", default_hand_date)).date()
-                default_hand_comment = row.get("コメント", "")
+                default_hand_date = pd.to_datetime(safe_get_value(existing_hand, 0, "日付", default_hand_date)).date()
+                default_hand_comment = safe_get_value(existing_hand, 0, "コメント", "")
             except Exception as e:
                 logging.error(f"手形データの読み込みエラー: {str(e)}")
 
@@ -304,23 +365,39 @@ elif st.session_state.page == "main":
             }])
             
             # 既存の行を削除し、新しいデータを追加
-            df_filtered = df_save[(df_save["名前"] != st.session_state.pet_name) | 
-                                (df_save["ページ"] != "手形")]
+            try:
+                df_filtered = df_save[(df_save["名前"] != st.session_state.pet_name) | 
+                                    (df_save["ページ"] != "手形")]
+            except Exception as e:
+                logging.error(f"フィルタリングエラー: {str(e)}")
+                df_filtered = get_empty_dataframe("main")
+                
             df_all = pd.concat([df_filtered, df_new], ignore_index=True)
             
             if safe_save_dataframe(df_all, SAVE_FILE):
                 st.success(t("✅ 手形情報を保存しました！", "✅ Handprint saved!"))
 
-        editable_data(df_save[(df_save["名前"] == st.session_state.pet_name) & 
-                            (df_save["ページ"] == "手形")], "hand", "手形")
+        # 編集可能データの表示
+        try:
+            editable_df = df_save[(df_save["名前"] == st.session_state.pet_name) & 
+                                (df_save["ページ"] == "手形")]
+        except Exception as e:
+            logging.error(f"フィルタリングエラー: {str(e)}")
+            editable_df = pd.DataFrame()
+            
+        editable_data(editable_df, "hand", "手形")
 
     # ページ 4: 初めてできたこと
     elif selected == t("4. 初めてできたこと", "4. First Milestones"):
         st.header(t("🎉 初めてできた記念", "🎉 First Milestones"))
 
-        # 既存データを取得
-        existing_firsts = df_save[(df_save["名前"] == st.session_state.pet_name) & 
-                                (df_save["ページ"] == "初めてできたこと")]
+        # 既存データを安全に取得
+        try:
+            existing_firsts = df_save[(df_save["名前"] == st.session_state.pet_name) & 
+                                    (df_save["ページ"] == "初めてできたこと")]
+        except Exception as e:
+            logging.error(f"初めてできたことデータフィルタリングエラー: {str(e)}")
+            existing_firsts = pd.DataFrame()
         
         records = []
         with st.form(key="milestone_form"):
@@ -339,9 +416,9 @@ elif st.session_state.page == "main":
                     default_what = ""
                     if not existing_firsts.empty and i < len(existing_firsts):
                         try:
-                            default_what = existing_firsts.iloc[i]["できたこと"]
-                        except:
-                            pass
+                            default_what = safe_get_value(existing_firsts, i, "できたこと", "")
+                        except Exception as e:
+                            logging.error(f"既存データ取得エラー: {str(e)}")
                     
                     what = st.text_input(
                         t(f"できたこと{i+1}", f"What they did {i+1}"), 
@@ -364,8 +441,13 @@ elif st.session_state.page == "main":
                 df_new = pd.DataFrame(records)
                 
                 # 既存の行を削除し、新しいデータを追加
-                df_filtered = df_save[(df_save["名前"] != st.session_state.pet_name) | 
-                                    (df_save["ページ"] != "初めてできたこと")]
+                try:
+                    df_filtered = df_save[(df_save["名前"] != st.session_state.pet_name) | 
+                                        (df_save["ページ"] != "初めてできたこと")]
+                except Exception as e:
+                    logging.error(f"フィルタリングエラー: {str(e)}")
+                    df_filtered = get_empty_dataframe("main")
+                    
                 df_all = pd.concat([df_filtered, df_new], ignore_index=True)
                 
                 if safe_save_dataframe(df_all, SAVE_FILE):
@@ -387,19 +469,22 @@ elif st.session_state.page == "main":
     elif selected == t("6. 誕生日メッセージ", "6. Birthday Message"):
         st.header(t("🎂 1歳の誕生日", "🎂 1st Birthday"))
 
-        # 既存データを取得
-        existing_bday = df_save[(df_save["名前"] == st.session_state.pet_name) & 
-                               (df_save["ページ"] == "誕生日メッセージ")]
+        # 既存データを安全に取得
+        try:
+            existing_bday = df_save[(df_save["名前"] == st.session_state.pet_name) & 
+                                   (df_save["ページ"] == "誕生日メッセージ")]
+        except Exception as e:
+            logging.error(f"誕生日メッセージデータフィルタリングエラー: {str(e)}")
+            existing_bday = pd.DataFrame()
         
-       # 誕生日メッセージの取得部分を修正
         default_bday_msg = ""
         if not existing_bday.empty:
-           try:
-              # NaNを空文字列に変換して対応
-              msg = existing_bday.iloc[0].get("メッセージ", "")
-              default_bday_msg = "" if pd.isna(msg) else msg
-           except Exception as e:
-            logging.error(f"誕生日メッセージの読み込みエラー: {str(e)}")
+            try:
+                # NaNを空文字列に変換して対応
+                msg = safe_get_value(existing_bday, 0, "メッセージ", "")
+                default_bday_msg = "" if pd.isna(msg) else msg
+            except Exception as e:
+                logging.error(f"誕生日メッセージの読み込みエラー: {str(e)}")
 
         birthday_photo = st.file_uploader(
             t("🎉 写真をアップロード", "🎉 Upload a birthday photo"),
@@ -427,38 +512,57 @@ elif st.session_state.page == "main":
             df_new = pd.DataFrame([{
                 "名前": st.session_state.pet_name,
                 "ページ": "誕生日メッセージ",
-                "メッセージ": birthday_msg
+                "メッセージ": birthday_msg if birthday_msg else ""  # 明示的に空文字列を設定
             }])
             
             # 既存の行を削除し、新しいデータを追加
-            df_filtered = df_save[(df_save["名前"] != st.session_state.pet_name) | 
-                                (df_save["ページ"] != "誕生日メッセージ")]
+            try:
+                df_filtered = df_save[(df_save["名前"] != st.session_state.pet_name) | 
+                                    (df_save["ページ"] != "誕生日メッセージ")]
+            except Exception as e:
+                logging.error(f"フィルタリングエラー: {str(e)}")
+                df_filtered = get_empty_dataframe("main")
+                
             df_all = pd.concat([df_filtered, df_new], ignore_index=True)
             
             if safe_save_dataframe(df_all, SAVE_FILE):
                 st.success(t("✅ 誕生日の記録を保存しました！", "✅ Birthday message saved!"))
 
-        editable_data(df_save[(df_save["名前"] == st.session_state.pet_name) & 
-                            (df_save["ページ"] == "誕生日メッセージ")], "bday", "誕生日メッセージ")
+        # 編集可能データの表示
+        try:
+            editable_df = df_save[(df_save["名前"] == st.session_state.pet_name) & 
+                                (df_save["ページ"] == "誕生日メッセージ")]
+        except Exception as e:
+            logging.error(f"フィルタリングエラー: {str(e)}")
+            editable_df = pd.DataFrame()
+            
+        editable_data(editable_df, "bday", "誕生日メッセージ")
 
     # ページ 7: 成長日記
     elif selected == t("7. 成長日記", "7. Growth Diary"):
         st.header(t("🗓 成長日記", "🗓 Growth Diary"))
 
-        # 生まれた日を取得
+        # 生まれた日を安全に取得
         birth_date = None
-        birth_row = df_save[(df_save["名前"] == st.session_state.pet_name) & (df_save["ページ"] == "基本事項")]
-        
-        if not birth_row.empty:
-            try:
-                birth_date = pd.to_datetime(birth_row.iloc[0]["生まれた日"])
-            except Exception as e:
-                st.warning(t("⚠️ 基本情報に生まれた日が正しく保存されていません。正しい形式で再入力してください。", 
-                            "⚠️ Birth date is not correctly saved in basic info. Please re-enter in correct format."))
-                logging.error(f"生まれた日の読み込みエラー: {str(e)}")
-        else:
-            st.warning(t("⚠️ 基本情報に生まれた日が保存されていません。基本情報ページで設定してください。", 
-                        "⚠️ Birth date not found in basic info. Please set it in Basic Info page."))
+        try:
+            birth_row = df_save[(df_save["名前"] == st.session_state.pet_name) & (df_save["ページ"] == "基本事項")]
+            
+            if not birth_row.empty:
+                try:
+                    birth_date_str = safe_get_value(birth_row, 0, "生まれた日", None)
+                    if birth_date_str:
+                        birth_date = pd.to_datetime(birth_date_str)
+                except Exception as e:
+                    st.warning(t("⚠️ 基本情報に生まれた日が正しく保存されていません。正しい形式で再入力してください。", 
+                                "⚠️ Birth date is not correctly saved in basic info. Please re-enter in correct format."))
+                    logging.error(f"生まれた日の読み込みエラー: {str(e)}")
+            else:
+                st.warning(t("⚠️ 基本情報に生まれた日が保存されていません。基本情報ページで設定してください。", 
+                            "⚠️ Birth date not found in basic info. Please set it in Basic Info page."))
+        except Exception as e:
+            logging.error(f"基本情報の取得エラー: {str(e)}")
+            st.warning(t("⚠️ 基本情報の取得中にエラーが発生しました。", 
+                        "⚠️ An error occurred while retrieving basic info."))
         
         # 成長日記入力フォーム
         with st.form(key="growth_diary_form"):
@@ -468,8 +572,11 @@ elif st.session_state.page == "main":
             
             days_old = None
             if birth_date:
-                days_old = (dt.date() - birth_date.date()).days
-                st.markdown(t(f"**🐣 生後 {days_old} 日目の記録**", f"**🐣 Day {days_old} since birth**"))
+                try:
+                    days_old = (dt.date() - birth_date.date()).days
+                    st.markdown(t(f"**🐣 生後 {days_old} 日目の記録**", f"**🐣 Day {days_old} since birth**"))
+                except Exception as e:
+                    logging.error(f"日数計算エラー: {str(e)}")
             
             col1, col2 = st.columns(2)
             with col1:
@@ -490,18 +597,18 @@ elif st.session_state.page == "main":
                     new_log = pd.DataFrame([{
                         "名前": st.session_state.pet_name,
                         "日付時間": dt,
-                        "生後日数": days_old,
-                        "食事内容": meal,
+                        "生後日数": days_old if days_old is not None else "",
+                        "食事内容": meal if meal else "",
                         "グラム": meal_grams,
-                        "おしっこ・うんち": potty,
-                        "散歩": walk,
-                        "睡眠": sleep,
-                        "MEMO": memo
+                        "おしっこ・うんち": potty if potty else "",
+                        "散歩": walk if walk else "",
+                        "睡眠": sleep if sleep else "",
+                        "MEMO": memo if memo else ""
                     }])
                     
                     # 既存のログファイルがあれば読み込む
                     if os.path.exists(GROWTH_LOG_FILE):
-                        old_log = safe_load_dataframe(GROWTH_LOG_FILE)
+                        old_log = safe_load_dataframe(GROWTH_LOG_FILE, "growth")
                         full_log = pd.concat([old_log, new_log], ignore_index=True)
                     else:
                         full_log = new_log
@@ -518,15 +625,19 @@ elif st.session_state.page == "main":
         
         if os.path.exists(GROWTH_LOG_FILE):
             try:
-                df_growth = safe_load_dataframe(GROWTH_LOG_FILE)
+                df_growth = safe_load_dataframe(GROWTH_LOG_FILE, "growth")
                 if df_growth.empty:
                     st.info(t("📭 まだ記録がありません", "📭 No records yet"))
                 else:
                     # データの前処理
-                    df_growth["日付時間"] = pd.to_datetime(df_growth["日付時間"], errors='coerce')
-                    df_growth = df_growth[df_growth["名前"] == st.session_state.pet_name]
+                    try:
+                        df_growth["日付時間"] = pd.to_datetime(df_growth["日付時間"], errors='coerce')
+                        filtered_growth = df_growth[df_growth["名前"] == st.session_state.pet_name]
+                    except Exception as e:
+                        logging.error(f"データ前処理エラー: {str(e)}")
+                        filtered_growth = pd.DataFrame()
                     
-                    if df_growth.empty:
+                    if filtered_growth.empty:
                         st.info(t("📭 このペットの記録はまだありません", "📭 No records for this pet yet"))
                     else:
                         # タブでフィルタと編集を分ける
@@ -550,17 +661,23 @@ elif st.session_state.page == "main":
                                     key="keyword_filter"
                                 )
                             
-                            filtered_df = df_growth.copy()
+                            filtered_df = filtered_growth.copy()
                             
                             # 日付フィルタの適用
                             if date_filter:
-                                filtered_df = filtered_df[filtered_df["日付時間"].dt.date.isin(date_filter)]
+                                try:
+                                    filtered_df = filtered_df[filtered_df["日付時間"].dt.date.isin(date_filter)]
+                                except Exception as e:
+                                    logging.error(f"日付フィルタエラー: {str(e)}")
                             
                             # キーワードフィルタの適用
                             if keyword:
-                                filtered_df = filtered_df[filtered_df.astype(str).apply(
-                                    lambda row: keyword.lower() in ' '.join(row.values.astype(str)).lower(), axis=1
-                                )]
+                                try:
+                                    filtered_df = filtered_df[filtered_df.astype(str).apply(
+                                        lambda row: keyword.lower() in ' '.join(row.values.astype(str)).lower(), axis=1
+                                    )]
+                                except Exception as e:
+                                    logging.error(f"キーワードフィルタエラー: {str(e)}")
                             
                             # 結果の表示
                             if not filtered_df.empty:
@@ -570,25 +687,30 @@ elif st.session_state.page == "main":
                                           "🔍 No records found matching your criteria"))
                         
                         with tab2:
-                            edited = st.data_editor(
-                                df_growth, 
-                                num_rows="dynamic", 
-                                use_container_width=True,
-                                key="growth_editor"
-                            )
-                            
-                            if st.button(t("変更を保存する", "Save Changes"), key="save_growth_edit"):
-                                # 全体のログから該当ペットの記録を削除し、編集された記録を追加
-                                try:
-                                    full_log = safe_load_dataframe(GROWTH_LOG_FILE)
-                                    others = full_log[full_log["名前"] != st.session_state.pet_name]
-                                    combined = pd.concat([others, edited], ignore_index=True)
-                                    
-                                    if safe_save_dataframe(combined, GROWTH_LOG_FILE):
-                                        st.success(t("✅ 編集内容を保存しました！", "✅ Changes saved!"))
-                                except Exception as e:
-                                    st.error(t(f"エラーが発生しました: {str(e)}", f"An error occurred: {str(e)}"))
-                                    logging.error(f"成長記録編集エラー: {str(e)}\n{traceback.format_exc()}")
+                            try:
+                                edited = st.data_editor(
+                                    filtered_growth, 
+                                    num_rows="dynamic", 
+                                    use_container_width=True,
+                                    key="growth_editor"
+                                )
+                                
+                                if st.button(t("変更を保存する", "Save Changes"), key="save_growth_edit"):
+                                    # 全体のログから該当ペットの記録を削除し、編集された記録を追加
+                                    try:
+                                        full_log = safe_load_dataframe(GROWTH_LOG_FILE, "growth")
+                                        others = full_log[full_log["名前"] != st.session_state.pet_name]
+                                        combined = pd.concat([others, edited], ignore_index=True)
+                                        
+                                        if safe_save_dataframe(combined, GROWTH_LOG_FILE):
+                                            st.success(t("✅ 編集内容を保存しました！", "✅ Changes saved!"))
+                                    except Exception as e:
+                                        st.error(t(f"エラーが発生しました: {str(e)}", f"An error occurred: {str(e)}"))
+                                        logging.error(f"成長記録編集エラー: {str(e)}\n{traceback.format_exc()}")
+                            except Exception as e:
+                                st.error(t(f"データエディタの表示中にエラーが発生しました: {str(e)}", 
+                                           f"An error occurred while displaying data editor: {str(e)}"))
+                                logging.error(f"データエディタエラー: {str(e)}")
                                     
             except Exception as e:
                 st.error(t(f"データの読み込み中にエラーが発生しました: {str(e)}", 
@@ -606,17 +728,21 @@ elif st.session_state.page == "main":
         existing_memo = ""
         
         if os.path.exists(MEMO_LOG_FILE):
-            memo_df = safe_load_dataframe(MEMO_LOG_FILE)
-            memo_entries = memo_df[memo_df["名前"] == st.session_state.pet_name]
-            
-            if not memo_entries.empty:
-                try:
-                    # 最新のメモを表示
-                    memo_entries["日付"] = pd.to_datetime(memo_entries["日付"], errors='coerce')
-                    latest_memo = memo_entries.sort_values("日付", ascending=False).iloc[0]
-                    existing_memo = latest_memo.get("メモ", "")
-                except Exception as e:
-                    logging.error(f"メモデータの読み込みエラー: {str(e)}")
+            try:
+                memo_df = safe_load_dataframe(MEMO_LOG_FILE, "memo")
+                memo_entries = memo_df[memo_df["名前"] == st.session_state.pet_name]
+                
+                if not memo_entries.empty:
+                    try:
+                        # 最新のメモを表示
+                        memo_entries["日付"] = pd.to_datetime(memo_entries["日付"], errors='coerce')
+                        memo_entries = memo_entries.sort_values("日付", ascending=False)
+                        if len(memo_entries) > 0:
+                            existing_memo = safe_get_value(memo_entries, 0, "メモ", "")
+                    except Exception as e:
+                        logging.error(f"メモデータの読み込みエラー: {str(e)}")
+            except Exception as e:
+                logging.error(f"メモファイル読み込みエラー: {str(e)}")
 
         with st.form(key="memo_form"):
             memo_input = st.text_area(
@@ -634,11 +760,11 @@ elif st.session_state.page == "main":
                         "名前": st.session_state.pet_name,
                         "ページ": "メモ欄",
                         "日付": date.today(),
-                        "メモ": memo_input
+                        "メモ": memo_input if memo_input else ""  # 明示的に空文字列を設定
                     }])
                     
                     if os.path.exists(MEMO_LOG_FILE):
-                        existing = safe_load_dataframe(MEMO_LOG_FILE)
+                        existing = safe_load_dataframe(MEMO_LOG_FILE, "memo")
                         memo_df = pd.concat([existing, memo_df], ignore_index=True)
                     
                     if safe_save_dataframe(memo_df, MEMO_LOG_FILE):
@@ -650,16 +776,19 @@ elif st.session_state.page == "main":
         # メモの履歴表示
         if os.path.exists(MEMO_LOG_FILE):
             try:
-                df_memo = safe_load_dataframe(MEMO_LOG_FILE)
+                df_memo = safe_load_dataframe(MEMO_LOG_FILE, "memo")
                 df_memo = df_memo[df_memo["名前"] == st.session_state.pet_name]
                 
                 if not df_memo.empty:
                     st.divider()
                     st.subheader(t("📚 メモ履歴", "📚 Memo History"))
                     
-                    # 日付でソート
-                    df_memo["日付"] = pd.to_datetime(df_memo["日付"], errors='coerce')
-                    df_memo = df_memo.sort_values("日付", ascending=False)
+                    try:
+                        # 日付でソート
+                        df_memo["日付"] = pd.to_datetime(df_memo["日付"], errors='coerce')
+                        df_memo = df_memo.sort_values("日付", ascending=False)
+                    except Exception as e:
+                        logging.error(f"メモソートエラー: {str(e)}")
                     
                     editable_data(df_memo, "memo", "メモ欄")
                     
